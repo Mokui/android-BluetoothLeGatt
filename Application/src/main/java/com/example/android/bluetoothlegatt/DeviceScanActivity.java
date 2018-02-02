@@ -39,6 +39,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.support.annotation.RequiresApi;
+import android.support.v4.app.ActivityCompat;
+import android.support.v4.content.ContextCompat;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -62,12 +64,13 @@ import static android.content.ContentValues.TAG;
 public class DeviceScanActivity extends ListActivity {
     private LeDeviceListAdapter mLeDeviceListAdapter;
     private BluetoothAdapter mBluetoothAdapter;
-    private BluetoothGatt mGatt; //To provide bluetooth communication
+    private BluetoothLeScanner mBluetoothLeScanner;
     private boolean mScanning;
     private Handler mHandler;
 
+    private static final String TAG = DeviceScanActivity.class.getSimpleName();
     private static final int REQUEST_ENABLE_BT = 1;
-    private static final int PERMISSION_REQUEST_COARSE_LOCATION = 1;
+    private static final int PERMISSION_REQUEST_COARSE_LOCATION = 2;
     // Stops scanning after 10 seconds.
     private static final long SCAN_PERIOD = 10000;
 
@@ -76,6 +79,17 @@ public class DeviceScanActivity extends ListActivity {
         super.onCreate(savedInstanceState);
         getActionBar().setTitle(R.string.title_devices);
         mHandler = new Handler();
+
+        // Prompt for permissions
+        if (Build.VERSION.SDK_INT >= 23) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+                    != PackageManager.PERMISSION_GRANTED) {
+                Log.w("BleActivity", "Location access not granted!");
+                ActivityCompat.requestPermissions(this,
+                        new String[]{Manifest.permission.ACCESS_COARSE_LOCATION},
+                        PERMISSION_REQUEST_COARSE_LOCATION);
+            }
+        }
 
         // Use this check to determine whether BLE is supported on the device.  Then you can
         // selectively disable BLE-related features.
@@ -89,6 +103,7 @@ public class DeviceScanActivity extends ListActivity {
         final BluetoothManager bluetoothManager =
                 (BluetoothManager) getSystemService(Context.BLUETOOTH_SERVICE);
         mBluetoothAdapter = bluetoothManager.getAdapter();
+        mBluetoothLeScanner = mBluetoothAdapter.getBluetoothLeScanner();
 
         // Checks if Bluetooth is supported on the device.
         if (mBluetoothAdapter == null) {
@@ -97,22 +112,6 @@ public class DeviceScanActivity extends ListActivity {
             return;
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M){
-            // Android M Permission check 
-            if (this.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                final AlertDialog.Builder builder = new AlertDialog.Builder(this);
-                builder.setTitle("This app needs location access");
-                builder.setMessage("Please grant location access so this app can detect beacons.");
-                builder.setPositiveButton(android.R.string.ok, null);
-                builder.setOnDismissListener(new DialogInterface.OnDismissListener(){
-                    @RequiresApi(api = Build.VERSION_CODES.M)
-                    public void onDismiss(DialogInterface dialog) {
-                        requestPermissions(new String[]{Manifest.permission.ACCESS_COARSE_LOCATION}, PERMISSION_REQUEST_COARSE_LOCATION);
-                    }
-                });
-                builder.show();
-            }
-        }
     }
 
     @Override
@@ -189,31 +188,158 @@ public class DeviceScanActivity extends ListActivity {
         intent.putExtra(DeviceControlActivity.EXTRAS_DEVICE_NAME, device.getName());
         intent.putExtra(DeviceControlActivity.EXTRAS_DEVICE_ADDRESS, device.getAddress());
         if (mScanning) {
-            mBluetoothAdapter.getBluetoothLeScanner().stopScan(mLeScanCallback);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                mBluetoothLeScanner.stopScan(new ScanCallback() {
+                    @Override
+                    public void onScanResult(int callbackType, ScanResult result) {
+                        mLeDeviceListAdapter.addDevice(result.getDevice());
+                        mLeDeviceListAdapter.notifyDataSetChanged();
+                    }
+
+                    @Override
+                    public void onBatchScanResults(List<ScanResult> results) {
+                        System.out.println("BLE// onBatchScanResults");
+                        for (ScanResult sr : results) {
+                            Log.i("ScanResult - Results", sr.toString());
+                        }
+                    }
+
+                    @Override
+                    public void onScanFailed(int errorCode) {
+                        switch (errorCode) {
+                            case SCAN_FAILED_ALREADY_STARTED:
+                                Log.d(TAG, "already started");
+                                break;
+                            case SCAN_FAILED_APPLICATION_REGISTRATION_FAILED:
+                                Log.d(TAG, "cannot be registered");
+                                break;
+                            case SCAN_FAILED_FEATURE_UNSUPPORTED:
+                                Log.d(TAG, "power optimized scan not supported");
+                                break;
+                            case SCAN_FAILED_INTERNAL_ERROR:
+                                Log.d(TAG, "internal error");
+                                break;
+                        }
+                    }
+                });
+            }
+            else
+            {
+                new BluetoothAdapter.LeScanCallback() {
+
+                    @Override
+                    public void onLeScan(final BluetoothDevice device, int rssi, byte[] scanRecord) {
+                        runOnUiThread(new Runnable() {
+                            @Override
+                            public void run() {
+                                String btDeviceName = device.getName();
+                                if (btDeviceName.startsWith("Nonin3230")) {
+                                    mLeDeviceListAdapter.addDevice(device);
+                                }
+                                mLeDeviceListAdapter.notifyDataSetChanged();
+                            }
+                        });
+                    }
+                };
+            }
             mScanning = false;
         }
         startActivity(intent);
     }
 
     private void scanLeDevice(final boolean enable) {
-        if (enable) {
-            // Stops scanning after a pre-defined scan period.
-            mHandler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    mScanning = false;
-                    mBluetoothAdapter.getBluetoothLeScanner().stopScan(mLeScanCallback);
-                    invalidateOptionsMenu();
-                }
-            }, SCAN_PERIOD);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            // Device scan callback.
+            final ScanCallback mLeScanCallback =
+                    new ScanCallback() {
+                        @Override
+                        public void onScanResult(int callbackType, ScanResult result) {
+                            mLeDeviceListAdapter.addDevice(result.getDevice());
+                            mLeDeviceListAdapter.notifyDataSetChanged();
+                        }
 
-            mScanning = true;
-            mBluetoothAdapter.getBluetoothLeScanner().startScan(mLeScanCallback);
-        } else {
-            mScanning = false;
-            mBluetoothAdapter.getBluetoothLeScanner().stopScan(mLeScanCallback);
+                        @Override
+                        public void onBatchScanResults(List<ScanResult> results) {
+                            System.out.println("BLE// onBatchScanResults");
+                            for (ScanResult sr : results) {
+                                Log.i("ScanResult - Results", sr.toString());
+                            }
+                        }
+
+                        @Override
+                        public void onScanFailed(int errorCode) {
+                            switch (errorCode) {
+                                case SCAN_FAILED_ALREADY_STARTED:
+                                    Log.d(TAG, "already started"); break;
+                                case SCAN_FAILED_APPLICATION_REGISTRATION_FAILED:
+                                    Log.d(TAG, "cannot be registered"); break;
+                                case SCAN_FAILED_FEATURE_UNSUPPORTED:
+                                    Log.d(TAG, "power optimized scan not supported"); break;
+                                case SCAN_FAILED_INTERNAL_ERROR:
+                                    Log.d(TAG, "internal error"); break;
+                            }
+                        }
+                    };
+
+            if (enable) {
+                // Stops scanning after a pre-defined scan period.
+                mHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        mScanning = false;
+                        mBluetoothLeScanner.stopScan(mLeScanCallback);
+                        invalidateOptionsMenu();
+                    }
+                }, SCAN_PERIOD);
+
+                mScanning = true;
+                mBluetoothLeScanner.startScan(mLeScanCallback);
+            } else {
+                mScanning = false;
+                mBluetoothLeScanner.stopScan(mLeScanCallback);
+            }
+            invalidateOptionsMenu();
         }
-        invalidateOptionsMenu();
+        else
+        {
+            // Device scan callback.
+            final BluetoothAdapter.LeScanCallback mLeScanCallback =
+                    new BluetoothAdapter.LeScanCallback() {
+
+                        @Override
+                        public void onLeScan(final BluetoothDevice device, int rssi, byte[] scanRecord) {
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    String btDeviceName = device.getName();
+                                    if (btDeviceName.startsWith("Nonin3230")) {
+                                        mLeDeviceListAdapter.addDevice(device);
+                                    }
+                                    mLeDeviceListAdapter.notifyDataSetChanged();
+                                }
+                            });
+                        }
+                    };
+
+            if (enable) {
+                // Stops scanning after a pre-defined scan period.
+                mHandler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        mScanning = false;
+                        mBluetoothAdapter.stopLeScan(mLeScanCallback);
+                        invalidateOptionsMenu();
+                    }
+                }, SCAN_PERIOD);
+
+                mScanning = true;
+                mBluetoothAdapter.startLeScan(mLeScanCallback);
+            } else {
+                mScanning = false;
+                mBluetoothAdapter.stopLeScan(mLeScanCallback);
+            }
+            invalidateOptionsMenu();
+        }
     }
 
     // Adapter for holding devices found through scanning.
@@ -223,7 +349,7 @@ public class DeviceScanActivity extends ListActivity {
 
         public LeDeviceListAdapter() {
             super();
-            mLeDevices = new ArrayList<BluetoothDevice>();
+            mLeDevices = new ArrayList<>();
             mInflator = DeviceScanActivity.this.getLayoutInflater();
         }
 
@@ -282,33 +408,6 @@ public class DeviceScanActivity extends ListActivity {
         }
     }
 
-    // Device scan callback.
-    private ScanCallback mLeScanCallback =
-            new ScanCallback() {
-                @Override
-                public void onScanResult(int callbackType, ScanResult result) {
-                    System.out.println("BLE// onScanResult");
-                    Log.i("callbackType", String.valueOf(callbackType));
-                    Log.i("result", result.toString());
-                    BluetoothDevice btDevice = result.getDevice();
-                    connectToDevice(btDevice);
-                }
-
-                @Override
-                public void onBatchScanResults(List<ScanResult> results) {
-                    System.out.println("BLE// onBatchScanResults");
-                    for (ScanResult sr : results) {
-                        Log.i("ScanResult - Results", sr.toString());
-                    }
-                }
-
-                @Override
-                public void onScanFailed(int errorCode) {
-                    System.out.println("BLE// onScanFailed");
-                    Log.e("Scan Failed", "Error Code: " + errorCode);
-                }
-            };
-
     @Override
     public void onRequestPermissionsResult(int requestCode,
                                            String permissions[],
@@ -333,54 +432,6 @@ public class DeviceScanActivity extends ListActivity {
             }
         }
     }
-
-    public void connectToDevice(BluetoothDevice device) {
-        System.out.println("BLE// connectToDevice()");
-        if (mGatt == null) {
-            mGatt = device.connectGatt(getApplicationContext(), false, gattCallback); //Connect to a GATT Server
-            //scanLeDevice(false);// will stop after first device detection
-        }
-    }
-
-    private final BluetoothGattCallback gattCallback = new BluetoothGattCallback() {
-        @Override
-        public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
-            System.out.println("BLE// BluetoothGattCallback");
-            Log.i("onConnectionStateChange", "Status: " + status);
-            switch (newState) {
-                case BluetoothProfile.STATE_CONNECTED:
-                    Log.i("gattCallback", "STATE_CONNECTED");
-                    gatt.discoverServices();
-                    break;
-                case BluetoothProfile.STATE_CONNECTING:
-                    Log.i("gattCallback", "STATE_CONNECTING");
-                    break;
-                case BluetoothProfile.STATE_DISCONNECTED:
-                    Log.e("gattCallback", "STATE_DISCONNECTED");
-                    break;
-                default:
-                    Log.e("gattCallback", "STATE_OTHER");
-            }
-        }
-
-        @Override
-        //New services discovered
-        public void onServicesDiscovered(BluetoothGatt gatt, int status) {
-            List<BluetoothGattService> services = gatt.getServices();
-            Log.i("onServicesDiscovered", services.toString());
-            gatt.readCharacteristic(services.get(1).getCharacteristics().get
-                    (0));
-        }
-
-        @Override
-        //Result of a characteristic read operation
-        public void onCharacteristicRead(BluetoothGatt gatt,
-                                         BluetoothGattCharacteristic
-                                                 characteristic, int status) {
-            Log.i("onCharacteristicRead", characteristic.toString());
-            gatt.disconnect();
-        }
-    };
 
     static class ViewHolder {
         TextView deviceName;
